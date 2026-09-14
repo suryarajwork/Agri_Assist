@@ -1116,7 +1116,6 @@ def get_annual_rainfall():
                 'error': _('Latitude and longitude are required.')
             }), 400
 
-        # Current year and previous 4 years
         current_year = datetime.now().year
         start_year = current_year - 4
 
@@ -1126,12 +1125,12 @@ def get_annual_rainfall():
         url = "https://archive-api.open-meteo.com/v1/archive"
 
         params = {
-            "latitude": lat,
-            "longitude": lon,
-            "start_date": start_date,
-            "end_date": end_date,
-            "daily": "precipitation_sum",
-            "timezone": "auto"
+            'latitude': lat,
+            'longitude': lon,
+            'start_date': start_date,
+            'end_date': end_date,
+            'daily': 'precipitation_sum',
+            'timezone': 'auto'
         }
 
         response = requests.get(
@@ -1140,17 +1139,28 @@ def get_annual_rainfall():
             timeout=30
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            return jsonify({
+                'error': 'Open-Meteo API error',
+                'status': response.status_code,
+                'details': response.text[:1000]
+            }), 502
 
         data = response.json()
 
-        daily_data = data.get("daily", {})
-        dates = daily_data.get("time", [])
-        rainfall = daily_data.get("precipitation_sum", [])
+        daily = data.get('daily')
+
+        if not daily:
+            return jsonify({
+                'error': 'No daily rainfall data returned by Open-Meteo.'
+            }), 404
+
+        dates = daily.get('time', [])
+        rainfall = daily.get('precipitation_sum', [])
 
         if not dates or not rainfall:
             return jsonify({
-                'error': _('No rainfall data available for the selected location.')
+                'error': 'Rainfall data is empty.'
             }), 404
 
         annual_rainfall = {}
@@ -1158,13 +1168,10 @@ def get_annual_rainfall():
         for date_str, rainfall_value in zip(dates, rainfall):
             try:
                 year = int(date_str[:4])
-
-                if rainfall_value is None:
-                    rainfall_value = 0
+                value = float(rainfall_value or 0)
 
                 annual_rainfall[year] = (
-                    annual_rainfall.get(year, 0) +
-                    float(rainfall_value)
+                    annual_rainfall.get(year, 0) + value
                 )
 
             except (ValueError, TypeError):
@@ -1172,33 +1179,32 @@ def get_annual_rainfall():
 
         result = [
             {
-                "year": year,
-                "rainfall": round(value, 2)
+                'year': year,
+                'rainfall': round(value, 2)
             }
             for year, value in sorted(annual_rainfall.items())
         ]
 
         return jsonify({
-            "success": True,
-            "data": result
+            'success': True,
+            'data': result
         })
 
     except requests.exceptions.Timeout:
-        app.logger.exception("Annual rainfall API timeout")
         return jsonify({
-            'error': _('Rainfall service timed out. Please try again.')
+            'error': 'Open-Meteo API request timed out.'
         }), 504
 
     except requests.exceptions.RequestException as e:
-        app.logger.exception("Annual rainfall API request failed: %s", e)
         return jsonify({
-            'error': _('Unable to fetch rainfall data at the moment.')
+            'error': 'Failed to connect to Open-Meteo.',
+            'details': str(e)
         }), 502
 
     except Exception as e:
-        app.logger.exception("Annual rainfall unexpected error: %s", e)
         return jsonify({
-            'error': _('An unexpected error occurred while fetching annual rainfall.')
+            'error': 'Annual rainfall processing failed.',
+            'details': str(e)
         }), 500
         
 @app.route('/api/predict_yield', methods=['POST'])
