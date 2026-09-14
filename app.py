@@ -1107,96 +1107,100 @@ def get_pesticide_needs(farm_id):
 @app.route('/api/annual_rainfall')
 @login_required
 def get_annual_rainfall():
-    lat = request.args.get('lat')
-    lon = request.args.get('lon')
-
-    if not lat or not lon:
-        return jsonify({
-            'error': _('Latitude and longitude are required.')
-        }), 400
-
-    # Validate coordinates
     try:
-        lat = float(lat)
-        lon = float(lon)
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
 
-        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            raise ValueError
+        if lat is None or lon is None:
+            return jsonify({
+                'error': _('Latitude and longitude are required.')
+            }), 400
 
-    except ValueError:
-        return jsonify({
-            'error': _('Invalid latitude or longitude.')
-        }), 400
+        # Current year and previous 4 years
+        current_year = datetime.now().year
+        start_year = current_year - 4
 
-    year = datetime.now().year
+        start_date = f"{start_year}-01-01"
+        end_date = f"{current_year}-12-31"
 
-    # Previous 5 complete years
-    start = f"{year - 5}-01-01"
-    end = f"{year - 1}-12-31"
-
-    try:
         url = "https://archive-api.open-meteo.com/v1/archive"
 
         params = {
             "latitude": lat,
             "longitude": lon,
-            "start_date": start,
-            "end_date": end,
-            "daily": "rain_sum",
+            "start_date": start_date,
+            "end_date": end_date,
+            "daily": "precipitation_sum",
             "timezone": "auto"
         }
 
         response = requests.get(
             url,
             params=params,
-            timeout=15
+            timeout=30
         )
 
         response.raise_for_status()
 
         data = response.json()
 
-        # Get daily rainfall values
-        rainfall = data.get('daily', {}).get('rain_sum', [])
+        daily_data = data.get("daily", {})
+        dates = daily_data.get("time", [])
+        rainfall = daily_data.get("precipitation_sum", [])
 
-        if not rainfall or all(value is None for value in rainfall):
+        if not dates or not rainfall:
             return jsonify({
-                'error': _(
-                    'No historical rainfall data available for this location.'
-                )
+                'error': _('No rainfall data available for the selected location.')
             }), 404
 
-        # Remove missing values
-        valid_rainfall = [
-            value for value in rainfall
-            if value is not None
+        annual_rainfall = {}
+
+        for date_str, rainfall_value in zip(dates, rainfall):
+            try:
+                year = int(date_str[:4])
+
+                if rainfall_value is None:
+                    rainfall_value = 0
+
+                annual_rainfall[year] = (
+                    annual_rainfall.get(year, 0) +
+                    float(rainfall_value)
+                )
+
+            except (ValueError, TypeError):
+                continue
+
+        result = [
+            {
+                "year": year,
+                "rainfall": round(value, 2)
+            }
+            for year, value in sorted(annual_rainfall.items())
         ]
 
-        # Total rainfall across the 5-year period
-        total_rainfall = sum(valid_rainfall)
-
-        # Average annual rainfall over 5 complete years
-        average_annual_rainfall = total_rainfall / 5
-
         return jsonify({
-            'annual_rainfall': round(average_annual_rainfall, 2)
+            "success": True,
+            "data": result
         })
 
-    except requests.exceptions.RequestException as e:
-        print(f"Open-Meteo historical weather error: {e}")
-
+    except requests.exceptions.Timeout:
+        app.logger.exception("Annual rainfall API timeout")
         return jsonify({
-            'error': _(
-                'Failed to connect to the historical data service.'
-            )
-        }), 500
+            'error': _('Rainfall service timed out. Please try again.')
+        }), 504
+
+    except requests.exceptions.RequestException as e:
+        app.logger.exception("Annual rainfall API request failed: %s", e)
+        return jsonify({
+            'error': _('Unable to fetch rainfall data at the moment.')
+        }), 502
 
     except Exception as e:
-        print(f"Annual rainfall calculation error: {e}")
-
+        app.logger.exception("Annual rainfall unexpected error: %s", e)
         return jsonify({
-            'error': _('Unable to calculate annual rainfall.')
+            'error': _('An unexpected error occurred while fetching annual rainfall.')
         }), 500
+        
 @app.route('/api/predict_yield', methods=['POST'])
 @login_required
 def api_predict_yield():
