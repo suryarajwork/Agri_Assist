@@ -1107,24 +1107,96 @@ def get_pesticide_needs(farm_id):
 @app.route('/api/annual_rainfall')
 @login_required
 def get_annual_rainfall():
-    lat, lon = request.args.get('lat'), request.args.get('lon')
-    if not lat or not lon: return jsonify({'error': _('Latitude and longitude are required.')}), 400
-    year = datetime.now().year
-    start, end = f"{year - 5}-01-01", f"{year - 1}-12-31"
-    try:
-        url = (f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}"
-               f"&start_date={start}&end_date={end}&daily=precipitation_sum")
-        r = requests.get(url, timeout=10); r.raise_for_status()
-        precip = r.json().get('daily', {}).get('precipitation_sum', [])
-        if not precip or all(p is None for p in precip):
-            return jsonify({'error': _('No historical rainfall data available for this location.')}), 404
-        total_precip = sum(filter(None, precip))
-        num_years = len(range(year - 5, year))
-        avg_rainfall = total_precip / num_years if num_years > 0 else 0
-        return jsonify({'annual_rainfall': round(avg_rainfall, 2)})
-    except requests.exceptions.RequestException:
-        return jsonify({'error': _('Failed to connect to the historical data service.')}), 500
+    lat = request.args.get('lat')
+    lon = request.args.get('lon')
 
+    if not lat or not lon:
+        return jsonify({
+            'error': _('Latitude and longitude are required.')
+        }), 400
+
+    # Validate coordinates
+    try:
+        lat = float(lat)
+        lon = float(lon)
+
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            raise ValueError
+
+    except ValueError:
+        return jsonify({
+            'error': _('Invalid latitude or longitude.')
+        }), 400
+
+    year = datetime.now().year
+
+    # Previous 5 complete years
+    start = f"{year - 5}-01-01"
+    end = f"{year - 1}-12-31"
+
+    try:
+        url = "https://archive-api.open-meteo.com/v1/archive"
+
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": start,
+            "end_date": end,
+            "daily": "rain_sum",
+            "timezone": "auto"
+        }
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Get daily rainfall values
+        rainfall = data.get('daily', {}).get('rain_sum', [])
+
+        if not rainfall or all(value is None for value in rainfall):
+            return jsonify({
+                'error': _(
+                    'No historical rainfall data available for this location.'
+                )
+            }), 404
+
+        # Remove missing values
+        valid_rainfall = [
+            value for value in rainfall
+            if value is not None
+        ]
+
+        # Total rainfall across the 5-year period
+        total_rainfall = sum(valid_rainfall)
+
+        # Average annual rainfall over 5 complete years
+        average_annual_rainfall = total_rainfall / 5
+
+        return jsonify({
+            'annual_rainfall': round(average_annual_rainfall, 2)
+        })
+
+    except requests.exceptions.RequestException as e:
+        print(f"Open-Meteo historical weather error: {e}")
+
+        return jsonify({
+            'error': _(
+                'Failed to connect to the historical data service.'
+            )
+        }), 500
+
+    except Exception as e:
+        print(f"Annual rainfall calculation error: {e}")
+
+        return jsonify({
+            'error': _('Unable to calculate annual rainfall.')
+        }), 500
 @app.route('/api/predict_yield', methods=['POST'])
 @login_required
 def api_predict_yield():
